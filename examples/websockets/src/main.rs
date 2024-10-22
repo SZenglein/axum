@@ -40,6 +40,7 @@ use axum::extract::ws::CloseFrame;
 
 //allows to split the websocket stream into separate TX and RX branches
 use futures::{sink::SinkExt, stream::StreamExt};
+use tokio::signal;
 
 #[tokio::main]
 async fn main() {
@@ -72,10 +73,42 @@ async fn main() {
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
+    )        .with_graceful_shutdown(shutdown_signal())
+
     .await
     .unwrap();
+    
+    tracing::debug!("server shut down successfully");
+    // let's keep the runtime alive for demonstration purposes
+    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+    
+    tracing::debug!("shutting down runtime");
 }
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+}
+
 
 /// The handler for the HTTP request (this gets called when the HTTP request lands at the start
 /// of websocket negotiation). After this completes, the actual switching from HTTP to
@@ -147,7 +180,7 @@ async fn handle_socket(mut socket: WebSocket, who: SocketAddr) {
 
     // Spawn a task that will push several messages to the client (does not matter what client does)
     let mut send_task = tokio::spawn(async move {
-        let n_msg = 20;
+        let n_msg = 20000;
         for i in 0..n_msg {
             // In case of any websocket error, we exit.
             if sender
